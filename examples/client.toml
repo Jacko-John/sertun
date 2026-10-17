@@ -1,0 +1,17 @@
+# With a proxy, this address is resolved/reached from the proxy exit host.
+# The proxy must allow CONNECT to this address and port.
+server = "127.0.0.1:7000"
+id = "home"
+token = "replace-with-a-generated-token"
+proxy = "http://127.0.0.1:7890"
+
+# Use proxy = "" for a direct connection, including an existing TUN/route.
+# With authentication: proxy = "http://user:password@127.0.0.1:7890"
+
+[[services]]
+name = "ssh"
+local = "127.0.0.1:22"
+
+[[services]]
+name = "web"
+local = "127.0.0.1:8000"

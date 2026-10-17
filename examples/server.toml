@@ -1,0 +1,17 @@
+# Run on the proxy exit host. Only the mapped service ports need public access.
+listen = "127.0.0.1:7000"
+
+[[clients]]
+id = "home"
+# Generate a shared token with: sertun token
+token = "replace-with-a-generated-token"
+max_connections = 128
+max_pending = 32
+
+[[clients.services]]
+name = "ssh"
+listen = "0.0.0.0:60022"
+
+[[clients.services]]
+name = "web"
+listen = "0.0.0.0:60800"

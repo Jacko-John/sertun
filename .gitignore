@@ -1,0 +1,8 @@
+/bin/
+/dist/
+/coverage.out
+*.test
+*.exe
+/server.toml
+/client.toml
+.DS_Store
