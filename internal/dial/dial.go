@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"sertun/internal/config"
+	"sertun/internal/streamcopy"
 )
 
 type Dialer struct {
@@ -88,24 +89,5 @@ func (d *Dialer) DialContext(ctx context.Context, address string) (result net.Co
 		return nil, err
 	}
 	ok = true
-	if reader.Buffered() != 0 {
-		return &bufferedConn{Conn: conn, reader: reader}, nil
-	}
-	return conn, nil
-}
-
-type bufferedConn struct {
-	net.Conn
-	reader *bufio.Reader
-}
-
-func (c *bufferedConn) Read(p []byte) (int, error) {
-	if c.reader.Buffered() > 0 {
-		return c.reader.Read(p)
-	}
-	return c.Conn.Read(p)
-}
-
-func (c *bufferedConn) CloseWrite() error {
-	return c.Conn.(interface{ CloseWrite() error }).CloseWrite()
+	return streamcopy.WithReadBuffer(conn.(*net.TCPConn), reader), nil
 }

@@ -31,7 +31,7 @@ func startTunnel(ctx context.Context, dir, variant string, control, exposed int,
 	}
 	var serverConfig, clientConfig, serverBin, clientBin string
 	var serverArgs, clientArgs []string
-	if variant == "sertun" {
+	if variant == "sertun" || variant == "sertun-baseline" {
 		serverConfig = fmt.Sprintf(`listen = "127.0.0.1:%d"
 [[clients]]
 id = "bench"
@@ -49,6 +49,9 @@ name = "echo"
 local = %q
 `, control, token, proxy, backend)
 		serverBin, clientBin = binaries.sertun, binaries.sertun
+		if variant == "sertun-baseline" {
+			serverBin, clientBin = binaries.baseline, binaries.baseline
+		}
 		serverArgs, clientArgs = []string{"server"}, []string{"client"}
 	} else {
 		mux := variant == "frp-mux"
@@ -70,7 +73,7 @@ auth.token = %q
 loginFailExit = false
 transport.protocol = "tcp"
 transport.tcpMux = %t
-transport.poolCount = 0
+transport.poolCount = 1
 transport.tls.enable = false
 transport.proxyURL = %q
 log.level = "error"

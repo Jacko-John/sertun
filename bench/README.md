@@ -1,60 +1,77 @@
 # 性能对照与复现
 
-benchmark 使用真实独立进程比较 sertun 与 frp，结果包含原始轮次和汇总表。负载发生器与回显服务运行在基准进程中，不计入隧道进程的 CPU / RSS；它们在所有配置中保持一致。
+benchmark 以真实独立进程比较 sertun 与 frp。生产转发路径不依赖测试工具；负载发生器和回显服务运行在基准进程中，不计入隧道与代理资源。
 
-## 场景
+## 场景与配置
 
-| 名称 | 隧道客户端到服务端的路径 |
+| 场景 | 客户端到服务端的路径 |
 | --- | --- |
 | `direct` | 直接 TCP |
 | `mihomo-direct` | HTTP CONNECT → Mihomo → DIRECT |
 | `mihomo-anytls` | HTTP CONNECT → Mihomo 客户端 → 本地 AnyTLS → Mihomo 服务端 → DIRECT |
 | `mihomo-hy2` | HTTP CONNECT → Mihomo 客户端 → 本地 Hysteria 2 → Mihomo 服务端 → DIRECT |
 
-所有端点绑定回环地址，运行时生成短期证书与凭据。Mihomo DIRECT 单独标记，避免与 AnyTLS / HY2 混淆。加密协议的两端也在同机，因此结果反映本机处理成本，不能外推到公网 RTT、丢包或远端 CPU。
+所有端点绑定回环地址；AnyTLS / HY2 运行真实协议，使用运行时生成的临时证书和凭据。结果反映本机处理成本，不代表公网环境。
 
-## 对照配置
+- `sertun`：默认的独立业务连接。
+- `frp-plain`：TCP，关闭额外 TLS、业务加密、压缩和 TCP 复用，工作连接池为 1。
+- `frp-mux`：与 frp-plain 相同，启用 TCP 复用。
 
-- **sertun**：独立业务连接，现有默认实现。
-- **frp-plain**：TCP、关闭额外 TLS、业务加密、压缩和复用，连接池为零。
-- **frp-mux**：与 frp-plain 相同，但启用 frp 的 TCP 复用。
+历史配置写入 `poolCount=0`，frp v0.71.1 的默认值处理会将其补成 1；现显式配置为 1。历史报告的有效连接池也为 1。依据：[配置默认值](https://github.com/fatedier/frp/blob/v0.71.1/pkg/config/v1/client.go#L153)、[零值处理](https://github.com/fatedier/frp/blob/v0.71.1/pkg/util/util/types.go#L17)。
 
-关闭 TLS 的配置仅用于本机或已经有外层加密的对照路径。保留 frp-mux 是为了同时展示实际可选的连接复用取舍。
+固定对照版本为 [frp v0.71.1](https://github.com/fatedier/frp/releases/tag/v0.71.1)和 [Mihomo v1.19.32](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.32)。首次运行从官方 Release 下载并核对发布资产的 SHA-256；可执行文件缓存到系统用户缓存目录，运行时配置和下载压缩包自动清理。
 
-每轮为各配置启动新进程，预热并确认回显链路可用后再测量；不同轮次交错运行配置，降低固定顺序带来的偏差。生产转发代码不因 benchmark 改变。
+## 负载与指标
 
-## 指标
+每个配置启动新进程，确认就绪，完成 10 个预热请求，静置 1 秒并观察空闲资源 1 秒，再运行短连接、单连接和并发负载。不同轮次轮换配置顺序。
 
-- 空闲隧道进程 RSS：客户端与服务端之和。
-- 外层代理 RSS：Mihomo 两端或 DIRECT 代理之和，独立记录。
-- 短连接 p50 / p95：从连接映射端口开始，到收到完整回显为止，覆盖反向配对与首个往返。
-- 单连接与小并发 TCP 回显吞吐：按实际收到的有效载荷计数，单位 MiB/s。写入与回显均发生在链路内。
-- 负载阶段的隧道与外层代理 CPU、RSS：CPU 以一个逻辑核心为 100%，RSS 为采样值，不代表操作系统分配内存总量。
+- 短连接延迟从连接映射端口到收到完整的 64 字节回显，包含反向配对与首个往返。分位数使用 nearest-rank，再按轮次取中位数。
+- 吞吐按收到的回显载荷计数一次，单位 MiB/s；bulk 写入块为 64 KiB，连接在计时前建立，逐字节检查数据。
+- CPU 以一个逻辑核心为 100%；CPU 核秒/GiB 按每轮有效吞吐归一化后，再取中位数与范围。
+- RSS 每 200ms 采样，负载阶段取采样峰值。隧道为客户端与服务端之和，代理独立统计；多个进程求和会重复计入共享页，不等于 heap 或 PSS。
+- 隧道与代理的阶段峰值之和不一定同时发生，不能视为精确的同时总峰值。
 
-每个请求检查回显，任何阶段失败都会终止本次运行，不生成成功报告。所有完成轮次保留，汇总采用中位数，同时保留范围供检查；短连接分位数使用 nearest-rank，汇总表取各轮分位数的中位数。
+所有完成轮次均保留，失败会中止运行。负载发生器与回显服务也会竞争本机 CPU，吞吐包含整条本地链路的调度与内核成本。
 
-读取进程资源依赖系统 `ps`，第一版支持 macOS 和 Linux，已实际运行的平台以结果文件为准。RSS 每 200ms 采样，阶段内取峰值，再按轮次汇总；它包括程序映射和共享页，客户端与服务端求和会重复计入共享页，不等于 Go heap 或 PSS。CPU 使用累计时间之差，macOS 精度为 0.01s，Linux 的 `ps` 通常只有 1s，短时 CPU 比较应谨慎解读。吞吐负载下各配置完成的数据量不同，CPU 百分比应结合吞吐阅读。
+资源采样依赖 `ps`，工具支持 macOS 和 Linux；实际运行平台以报告为准。macOS CPU 累计时间精度为 0.01 秒，Linux 的 `ps` 通常只有 1 秒，短时 CPU 比较应谨慎。
 
 ## 运行
 
-固定对照版本：[frp v0.71.1](https://github.com/fatedier/frp/releases/tag/v0.71.1)、[Mihomo v1.19.32](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.32)。工具从官方 GitHub Release 下载，校验发布资产的 SHA-256，二进制保存在系统用户缓存目录的 `sertun-bench` 下；下载压缩包和运行时配置会自动清理。运行需要 Go、Git、`ps` 及首次下载的网络访问，不需要管理员权限；请在仓库根目录执行。
+需要 Go、Git、`ps`，以及首次下载时的网络访问。在仓库根目录运行：
 
 ```sh
-go run ./cmd/sertun-bench -output bench/results/local.json
+go run ./cmd/sertun-bench -trials 3 -duration 6s -short-count 100 -parallel 8 \
+  -output bench/results/local.json
 ```
 
-可用 `-scenarios direct,mihomo-direct` 先跑最小对照，或通过 `-trials`、`-duration`、`-short-count`、`-parallel` 调整负载。单轮短时间运行适合检查工具能否工作；公开对比使用多轮结果，并保持比较双方的参数一致。
+`-scenarios` 可选逗号分隔的上述场景。结果文件已存在时拒绝覆盖；各负载串行执行，运行期间避免其他构建、下载或压测。
 
-每组先完成回显就绪检查与 10 个预热请求，静置 1s 后观察空闲资源 1s，再运行短连接、单连接、并发负载。bulk 使用 64KiB 写入块，连接在计时前建立，每个收到的字节均检查；负载发生器和回显服务也消耗本机 CPU，因此回环吞吐包含整条本地链路的调度与内核成本。
+优化前后对照可使用 `-baseline-ref`，工具从指定提交导出源码，以同一 Go 编译器和构建参数重建，不改变当前 checkout：
 
-结果文件已存在时会拒绝覆盖；再次运行应指定新文件名。压测按场景和配置串行执行，建议保持机器空闲，避免其他构建、测试或下载与测量重叠。完整默认矩阵有 36 组，约需数分钟。
+```sh
+go run ./cmd/sertun-bench -scenarios direct -trials 4 -duration 4s \
+  -baseline-ref 34d5a97 -output bench/results/direct-local.json
+```
 
-生成的 JSON 包含环境、版本、二进制摘要与大小、实际构建使用的 Go 版本、参数、逐请求延迟和全部轮次；同名 Markdown 用于审阅。官方发布版与本机编译的 sertun 可能使用不同编译器，这属于指定二进制的部署对照，不能把差异全部归因于代码设计。结果不包含真实节点凭据、主机名或个人路径。
+复制微基准仅测单个转发阶段，不与完整隧道吞吐混用。内存微基准预热缓冲池，用于观察分配，不代表进程 RSS：
 
-## 已记录基线
+```sh
+go test ./internal/streamcopy -run '^$' -bench BenchmarkTCPCopy -benchmem -benchtime=2s -count=3
+go test ./internal/streamcopy -run '^$' -bench BenchmarkCopyBuffers -benchmem -benchtime=1s -count=3
+```
 
-- [2026-10-18，macOS arm64](results/2026-10-18-macos-arm64.md)：四种链路、三种配置、三轮，共 36 组；[原始 JSON](results/2026-10-18-macos-arm64.json)。复现时使用上面命令并添加 `-duration 3s`。环境中的 `memory` 在 macOS 为 `hw.memsize` 的字节数，Linux 为 `/proc/meminfo` 的 `MemTotal`（含单位）。
+JSON 记录环境、工具版本和摘要、编译器、负载参数、全部轮次与逐请求延迟，同名 Markdown 提供汇总。官方二进制和本机 sertun 的编译器可能不同；报告保留这个差异，不将其全部归因于实现。
 
-## 真实节点的后续验证
+## 结果索引
 
-当前命令只创建本地隔离链路。真实节点需单独记录服务端位置与硬件、RTT、丢包、可用带宽、节点协议和版本，在同一时段使用相同负载比较，并将结果另存。代理入口应只引用本地配置，不向公开报告写入订阅、凭据或私人地址。公网结果不能与本地结果混成同一组中位数。
+| 结果 | 范围 | 原始数据 |
+| --- | --- | --- |
+| [当前直连](results/2026-10-19-direct-single.md) | 三种配置，各三轮，6 秒 | [JSON](results/2026-10-19-direct-single.json) |
+| [当前 Mihomo](results/2026-10-19-mihomo.md) | 三种路径、三种配置，各三轮，6 秒 | [JSON](results/2026-10-19-mihomo.json) |
+| [复制微基准](results/2026-10-19-streamcopy.txt) | 最终实现各三轮 | 原始文本 |
+| [历史初始基线](results/2026-10-18-macos-arm64.md) | 四种路径，共 36 组，3 秒 | [JSON](results/2026-10-18-macos-arm64.json) |
+| [历史直连优化](results/2026-10-18-direct-copy.md) | 四种配置，共 16 组，4 秒 | [JSON](results/2026-10-18-direct-copy.json) |
+
+结果对应测量时的源码和二进制摘要；不能将不同次测量的绝对值当作严格的优化前后增益。当前实现与资源边界见 [验证记录](../VALIDATION.md)。
+
+真实节点需要单独记录 RTT、丢包、带宽、协议、版本和服务器条件，使用独立结果文件。公开报告只保留复现所需的信息，不包含订阅、凭据、私人地址、主机名或个人路径。

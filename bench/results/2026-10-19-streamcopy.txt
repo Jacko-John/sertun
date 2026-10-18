@@ -1,0 +1,69 @@
+sertun copy microbenchmarks, 2026-10-19
+Environment: Apple M5 Pro, macOS arm64, Go 1.27.2.
+Source: uncommitted working tree. Final source hashes are listed below.
+Scope: one loopback TCP relay stage, plus in-memory allocation checks.
+TCP throughput uses decimal MB/s, not MiB/s. This is not a tunnel/frp/Mihomo comparison.
+All three rounds of each final benchmark are retained. Do not compare in-memory MB/s with network throughput.
+
+Final source SHA-256:
+19ce98ae424a93061573c4cdadc132f828aa01d02d7f4859cb4c692ae49718de  internal/streamcopy/buffered.go
+b6908b1084e0b5e23a9b97ec71b4d75b429d3c3e37c2e43d6c20f0aee9f0f791  internal/streamcopy/copy.go
+e7cdf440b7afeed1dbf0d7959e7aeab8324ddcd02484937d018c25a442885ee7  internal/streamcopy/copy_bench_test.go
+436b04469b1118e1f7595029bebb8e2d7746d15df84d9bad50da2e9ed21745b1  internal/streamcopy/copy_linux.go
+9ff68ba6d8bc0d0e18a54c268a748d6353973ff06c000cea73a249b6746b5686  internal/streamcopy/copy_other.go
+f53e3f60c024d6fc26f85c67f5f2868b48690996717b15c70e6bcc71a2b5db3d  internal/streamcopy/copy_test.go
+
+TCP copy benchmarks:
+Command: three consecutive runs of go test ./internal/streamcopy -run '^$' -bench '^BenchmarkTCPCopy$' -benchmem -benchtime=2s -count=1
+goos: darwin
+goarch: arm64
+pkg: sertun/internal/streamcopy
+cpu: Apple M5 Pro
+BenchmarkTCPCopy/stdlib-18         	  148485	     14134 ns/op	4636.88 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/sertun-18         	  216890	     11260 ns/op	5820.40 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/stdlib_buffered-18         	  154984	     13976 ns/op	4689.34 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/sertun_buffered-18         	  210924	     11214 ns/op	5844.12 MB/s	       3 B/op	       0 allocs/op
+PASS
+ok  	sertun/internal/streamcopy	10.058s
+goos: darwin
+goarch: arm64
+pkg: sertun/internal/streamcopy
+cpu: Apple M5 Pro
+BenchmarkTCPCopy/stdlib-18         	  149841	     13848 ns/op	4732.42 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/sertun-18         	  214075	     11186 ns/op	5858.66 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/stdlib_buffered-18         	  170690	     13894 ns/op	4716.90 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/sertun_buffered-18         	  214542	     11258 ns/op	5821.15 MB/s	       3 B/op	       0 allocs/op
+PASS
+ok  	sertun/internal/streamcopy	9.965s
+goos: darwin
+goarch: arm64
+pkg: sertun/internal/streamcopy
+cpu: Apple M5 Pro
+BenchmarkTCPCopy/stdlib-18         	  150736	     13645 ns/op	4803.07 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/sertun-18         	  211502	     11108 ns/op	5900.13 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/stdlib_buffered-18         	  172610	     13811 ns/op	4745.21 MB/s	       3 B/op	       0 allocs/op
+BenchmarkTCPCopy/sertun_buffered-18         	  221317	     11190 ns/op	5856.46 MB/s	       3 B/op	       0 allocs/op
+PASS
+ok  	sertun/internal/streamcopy	9.960s
+
+Allocation benchmarks:
+Fixtures are reused and pools are warmed before timing. Pool misses may still allocate.
+Command: go test ./internal/streamcopy -run '^$' -bench '^BenchmarkCopyBuffers$' -benchmem -benchtime=1s -count=3
+goos: darwin
+goarch: arm64
+pkg: sertun/internal/streamcopy
+cpu: Apple M5 Pro
+BenchmarkCopyBuffers/stdlib/64B-18         	  577333	      1789 ns/op	  35.78 MB/s	   32768 B/op	       1 allocs/op
+BenchmarkCopyBuffers/stdlib/64B-18         	  674769	      1889 ns/op	  33.88 MB/s	   32768 B/op	       1 allocs/op
+BenchmarkCopyBuffers/stdlib/64B-18         	  622568	      1899 ns/op	  33.70 MB/s	   32768 B/op	       1 allocs/op
+BenchmarkCopyBuffers/sertun/64B-18         	26749987	        43.66 ns/op	1465.83 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCopyBuffers/sertun/64B-18         	27441873	        43.77 ns/op	1462.26 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCopyBuffers/sertun/64B-18         	26944897	        43.83 ns/op	1460.17 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCopyBuffers/stdlib/4194304B-18    	   22104	     51944 ns/op	80746.32 MB/s	   32768 B/op	       1 allocs/op
+BenchmarkCopyBuffers/stdlib/4194304B-18    	   22747	     54912 ns/op	76382.20 MB/s	   32768 B/op	       1 allocs/op
+BenchmarkCopyBuffers/stdlib/4194304B-18    	   18589	     64281 ns/op	65249.45 MB/s	   32768 B/op	       1 allocs/op
+BenchmarkCopyBuffers/sertun/4194304B-18    	   23547	     64487 ns/op	65040.61 MB/s	      12 B/op	       0 allocs/op
+BenchmarkCopyBuffers/sertun/4194304B-18    	   23635	     64367 ns/op	65162.78 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCopyBuffers/sertun/4194304B-18    	   23481	     64217 ns/op	65315.02 MB/s	      23 B/op	       0 allocs/op
+PASS
+ok  	sertun/internal/streamcopy	18.807s

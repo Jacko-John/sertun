@@ -6,3 +6,9 @@
 /server.toml
 /client.toml
 .DS_Store
+/bench/results/local*.json
+/bench/results/local*.md
+/bench/results/*-local.json
+/bench/results/*-local.md
+/bench/results/*.pprof
+/bench/results/*.trace
