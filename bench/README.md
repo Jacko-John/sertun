@@ -30,6 +30,7 @@ benchmark 使用真实独立进程比较 sertun 与 frp，结果包含原始轮�
 - 短连接 p50 / p95：从连接映射端口开始，到收到完整回显为止，覆盖反向配对与首个往返。
 - 单连接与小并发 TCP 回显吞吐：按实际收到的有效载荷计数，单位 MiB/s。写入与回显均发生在链路内。
 - 负载阶段的隧道与外层代理 CPU、RSS：CPU 以一个逻辑核心为 100%，RSS 为采样值，不代表操作系统分配内存总量。
+- 单位有效数据的 CPU 成本：CPU 核秒 / GiB，越低越好。每轮先以 CPU 百分比和实际吞吐换算，再汇总中位数，不能用两项汇总值的比值代替。
 
 每个请求检查回显，任何阶段失败都会终止本次运行，不生成成功报告。所有完成轮次保留，汇总采用中位数，同时保留范围供检查；短连接分位数使用 nearest-rank，汇总表取各轮分位数的中位数。
 
@@ -49,11 +50,29 @@ go run ./cmd/sertun-bench -output bench/results/local.json
 
 结果文件已存在时会拒绝覆盖；再次运行应指定新文件名。压测按场景和配置串行执行，建议保持机器空闲，避免其他构建、测试或下载与测量重叠。完整默认矩阵有 36 组，约需数分钟。
 
+优化前后可在同一轮矩阵中比较。`-baseline-ref` 从仓库提交导出源码，用当前 Go 编译器和相同构建参数生成 `sertun-baseline`，与当前 `sertun`、frp 两种配置交错运行；不会修改当前 checkout。四种配置使用至少四轮，可使每种配置轮到每个执行位置。
+
+```sh
+go run ./cmd/sertun-bench -scenarios direct -trials 4 -duration 4s \
+  -baseline-ref 34d5a97 -output bench/results/direct-local.json
+```
+
+macOS 的 TCP 复制微基准可单独运行，用于隔离缓冲策略和采样 CPU。它只包含一个转发阶段，不能将其吞吐用作整个隧道的性能宣传：
+
+```sh
+go test ./internal/relay -run '^$' -bench BenchmarkTCPCopy -benchtime=2s -count=3
+```
+
 生成的 JSON 包含环境、版本、二进制摘要与大小、实际构建使用的 Go 版本、参数、逐请求延迟和全部轮次；同名 Markdown 用于审阅。官方发布版与本机编译的 sertun 可能使用不同编译器，这属于指定二进制的部署对照，不能把差异全部归因于代码设计。结果不包含真实节点凭据、主机名或个人路径。
 
 ## 已记录基线
 
 - [2026-10-18，macOS arm64](results/2026-10-18-macos-arm64.md)：四种链路、三种配置、三轮，共 36 组；[原始 JSON](results/2026-10-18-macos-arm64.json)。复现时使用上面命令并添加 `-duration 3s`。环境中的 `memory` 在 macOS 为 `hw.memsize` 的字节数，Linux 为 `/proc/meminfo` 的 `MemTotal`（含单位）。
+- [2026-10-18，直连复制优化](results/2026-10-18-direct-copy.md)：优化前后两个 sertun 使用 Go 1.27.2 重建，与 frp 两种配置交错四轮，共 16 组；[原始 JSON](results/2026-10-18-direct-copy.json)。每个 bulk 阶段 4s，100 个短连接、8 条并发流；CPU 成本按各轮的有效回显载荷归一化。
+
+本轮优化前的 CPU 采样包含单条与两条直连流的诊断负载，主要样本位于 socket 系统调用、网络轮询与运行时调度。Go 在 macOS 上的 TCP 复制回退到 32 KiB 用户态缓冲；仅向 `io.CopyBuffer` 提供较大缓冲还不够，TCP 的 `WriterTo` / `ReaderFrom` 会优先执行并忽略该缓冲，见 [Go 文档](https://pkg.go.dev/io#CopyBuffer)。生产策略只对 macOS 的原生 TCP 对隐藏这些方法，分级复用 32 / 256 KiB 缓冲；其他连接类型保留原有复制方法。
+
+大流量方向每端的工作缓冲比原来多 224 KiB，两个方向均升级时每端多 448 KiB；`sync.Pool` 中的闲置缓冲可由 GC 回收。短流不会直接分配大缓冲。进程 RSS 包括 GC、映射和缓存，不能从这些工作缓冲大小直接推算，应同时检查报告内的空闲与负载采样。
 
 ## 真实节点的后续验证
 

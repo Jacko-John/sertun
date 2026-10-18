@@ -152,6 +152,19 @@ type BulkResult struct {
 	Resources       Resources `json:"resources"`
 }
 
+// cpuCost normalizes process CPU by completed payload; 100% is one CPU second
+// per wall second. This compares efficiency even when throughput differs.
+func (r BulkResult) cpuCost(includeProxy bool) float64 {
+	if r.MiBPerSecond == 0 {
+		return 0
+	}
+	percent := r.Resources.TunnelCPUPercent
+	if includeProxy {
+		percent += r.Resources.ProxyCPUPercent
+	}
+	return percent / 100 / (r.MiBPerSecond / 1024)
+}
+
 // bulk opens connections before timing and validates every received byte. A
 // common deadline ends readers and writers without depending on half-close.
 func bulk(ctx context.Context, address string, count int, duration time.Duration, children *processes) (BulkResult, error) {

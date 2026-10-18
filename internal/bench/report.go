@@ -63,6 +63,10 @@ type Summary struct {
 	SingleProxyCPU     Metric `json:"single_proxy_cpu_percent"`
 	ParallelTunnelCPU  Metric `json:"parallel_tunnel_cpu_percent"`
 	ParallelProxyCPU   Metric `json:"parallel_proxy_cpu_percent"`
+	SingleTunnelCost   Metric `json:"single_tunnel_cpu_seconds_per_gib"`
+	SingleTotalCost    Metric `json:"single_tunnel_proxy_cpu_seconds_per_gib"`
+	ParallelTunnelCost Metric `json:"parallel_tunnel_cpu_seconds_per_gib"`
+	ParallelTotalCost  Metric `json:"parallel_tunnel_proxy_cpu_seconds_per_gib"`
 }
 
 // newReport captures actual executable hashes and compiler versions before load.
@@ -84,7 +88,11 @@ func newReport(ctx context.Context, options Options, commit string, binaries too
 			GitCommit: commit, WorktreeDirty: len(status) != 0, ProductDirty: len(productStatus) != 0,
 		},
 	}
-	for _, tool := range []struct{ name, version, path string }{{"sertun", commit, binaries.sertun}, {"frpc", frpVersion, binaries.frpc}, {"frps", frpVersion, binaries.frps}, {"mihomo", mihomoVersion, binaries.mihomo}} {
+	toolSources := []struct{ name, version, path string }{{"sertun", commit, binaries.sertun}, {"frpc", frpVersion, binaries.frpc}, {"frps", frpVersion, binaries.frps}, {"mihomo", mihomoVersion, binaries.mihomo}}
+	if binaries.baseline != "" {
+		toolSources = append(toolSources, struct{ name, version, path string }{"sertun-baseline", options.BaselineRef, binaries.baseline})
+	}
+	for _, tool := range toolSources {
 		info, err := describeTool(tool.name, tool.version, tool.path)
 		if err != nil {
 			return nil, err
@@ -110,7 +118,7 @@ func metric(values []float64) Metric {
 func summarize(trials []Trial, scenarios []string) []Summary {
 	var summaries []Summary
 	for _, scenario := range scenarios {
-		for _, variant := range []string{"sertun", "frp-plain", "frp-mux"} {
+		for _, variant := range []string{"sertun", "sertun-baseline", "frp-plain", "frp-mux"} {
 			var group []Trial
 			for _, trial := range trials {
 				if trial.Scenario == scenario && trial.Variant == variant {
@@ -139,6 +147,10 @@ func summarize(trials []Trial, scenarios []string) []Summary {
 				SingleProxyCPU:     collect(func(t Trial) float64 { return t.Single.Resources.ProxyCPUPercent }),
 				ParallelTunnelCPU:  collect(func(t Trial) float64 { return t.Parallel.Resources.TunnelCPUPercent }),
 				ParallelProxyCPU:   collect(func(t Trial) float64 { return t.Parallel.Resources.ProxyCPUPercent }),
+				SingleTunnelCost:   collect(func(t Trial) float64 { return t.Single.cpuCost(false) }),
+				SingleTotalCost:    collect(func(t Trial) float64 { return t.Single.cpuCost(true) }),
+				ParallelTunnelCost: collect(func(t Trial) float64 { return t.Parallel.cpuCost(false) }),
+				ParallelTotalCost:  collect(func(t Trial) float64 { return t.Parallel.cpuCost(true) }),
 			})
 		}
 	}
@@ -200,6 +212,9 @@ func (r *Report) Markdown() string {
 	fmt.Fprintf(&b, "Environment: %s %s / %s; %s; %d logical CPUs; memory %s; harness %s.\n\n", e.OS, e.SystemVersion, e.Arch, e.CPU, e.LogicalCPUs, e.Memory, e.HarnessGo)
 	fmt.Fprintf(&b, "Source: `%s`; worktree dirty: %t; product source dirty: %t. sertun build: `CGO_ENABLED=0 go build -trimpath -ldflags '-s -w -X main.version=<commit>'`.\n\n", e.GitCommit, e.WorktreeDirty, e.ProductDirty)
 	fmt.Fprintf(&b, "Workload: %d trials/configuration; %s per bulk phase; %d short requests/trial (64-byte echo); %d parallel streams; 10 warmup requests; 1s settle + 1s idle observation. All endpoints use loopback.\n\n", r.Options.Trials, r.Options.Duration, r.Options.ShortCount, r.Options.Parallel)
+	if r.Options.BaselineRef != "" {
+		fmt.Fprintf(&b, "Optimization baseline: `%s`, rebuilt with the same compiler and flags as the working-tree sertun. All variants are interleaved in the same run.\n\n", r.Options.BaselineRef)
+	}
 	fmt.Fprintln(&b, "| Tool | Version | Build Go | Binary MiB | SHA-256 |\n| --- | --- | --- | ---: | --- |")
 	for _, tool := range r.Tools {
 		fmt.Fprintf(&b, "| %s | %s | %s | %.2f | `%s` |\n", tool.Name, tool.Version, tool.GoVersion, float64(tool.Bytes)/(1<<20), tool.SHA256)
@@ -213,6 +228,11 @@ func (r *Report) Markdown() string {
 	fmt.Fprintln(&b, "\n| Scenario | Variant | Single tunnel CPU % | Single outer CPU % | Parallel tunnel CPU % | Parallel outer CPU % |\n| --- | --- | ---: | ---: | ---: | ---: |")
 	for _, s := range r.Summary {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", s.Scenario, s.Variant, format(s.SingleTunnelCPU), format(s.SingleProxyCPU), format(s.ParallelTunnelCPU), format(s.ParallelProxyCPU))
+	}
+	fmt.Fprintln(&b, "\nCPU cost counts summed process CPU seconds per GiB of received echo payload; lower is better. Tunnel + outer excludes the harness and backend. Each trial is normalized before median/range aggregation.")
+	fmt.Fprintln(&b, "\n| Scenario | Variant | Single tunnel CPU s/GiB | Single tunnel + outer CPU s/GiB | Parallel tunnel CPU s/GiB | Parallel tunnel + outer CPU s/GiB |\n| --- | --- | ---: | ---: | ---: | ---: |")
+	for _, s := range r.Summary {
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n", s.Scenario, s.Variant, format(s.SingleTunnelCost), format(s.SingleTotalCost), format(s.ParallelTunnelCost), format(s.ParallelTotalCost))
 	}
 	fmt.Fprintln(&b, "\nfrp-plain: TCP mux/TLS/payload encryption/compression disabled, poolCount=0. frp-mux: same settings with TCP mux enabled. AnyTLS/HY2 use real local Mihomo endpoints and an ephemeral self-signed certificate; only certificate trust verification is skipped. No WAN loss, RTT, reconnect or outer half-close claims follow from these workloads. Official releases may use different Go compilers, as recorded above.")
 	return b.String()

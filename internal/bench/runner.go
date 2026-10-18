@@ -17,11 +17,12 @@ import (
 
 // Options defines a common workload for all compared implementations.
 type Options struct {
-	Scenarios  []string      `json:"scenarios"`
-	Trials     int           `json:"trials"`
-	Duration   time.Duration `json:"duration_ns"`
-	ShortCount int           `json:"short_count"`
-	Parallel   int           `json:"parallel"`
+	Scenarios   []string      `json:"scenarios"`
+	Trials      int           `json:"trials"`
+	Duration    time.Duration `json:"duration_ns"`
+	ShortCount  int           `json:"short_count"`
+	Parallel    int           `json:"parallel"`
+	BaselineRef string        `json:"baseline_ref,omitempty"`
 }
 
 // Trial preserves every successful run; any failed phase aborts publication.
@@ -80,10 +81,15 @@ func Run(ctx context.Context, options Options, progress io.Writer) (*Report, err
 	}
 	version := strings.TrimSpace(string(commit))
 	fmt.Fprintln(progress, "Building sertun with CGO_ENABLED=0, -trimpath, -s -w...")
-	build := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", binaries.sertun, "./cmd/sertun")
-	build.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if output, err := build.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("build sertun: %w: %s", err, output)
+	if err := buildSertun(ctx, ".", binaries.sertun, version); err != nil {
+		return nil, err
+	}
+	if options.BaselineRef != "" {
+		fmt.Fprintln(progress, "Building baseline Git revision with the same Go compiler...")
+		binaries.baseline, options.BaselineRef, err = buildBaseline(ctx, dir, options.BaselineRef)
+		if err != nil {
+			return nil, err
+		}
 	}
 	report, err := newReport(ctx, options, version, binaries)
 	if err != nil {
@@ -95,8 +101,11 @@ func Run(ctx context.Context, options Options, progress io.Writer) (*Report, err
 	}
 	defer backend.close()
 	variants := []string{"sertun", "frp-plain", "frp-mux"}
+	if binaries.baseline != "" {
+		variants = []string{"sertun", "sertun-baseline", "frp-plain", "frp-mux"}
+	}
 	for round := 1; round <= options.Trials; round++ {
-		// Rotate both orders; three rounds give each variant every position.
+		// Rotate orders; N rounds give each of the N variants every position.
 		for offset := range len(options.Scenarios) {
 			scenario := options.Scenarios[(offset+round-1)%len(options.Scenarios)]
 			for index := range len(variants) {
