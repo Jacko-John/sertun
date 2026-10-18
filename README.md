@@ -4,6 +4,38 @@
 
 sertun 负责服务注册、连接配对与字节转发。外层代理独立运行，负责传输加密。第一版仅支持 TCP，工具自身不叠加多路复用。
 
+## 与 frp 的性能对照
+
+适合已经运行 AnyTLS / HY2、只需要反向映射 SSH 或 Web 端口的部署。在本次 macOS arm64 基准中，sertun 的客户端与服务端空闲 RSS 合计为 **24.5 至 24.8 MiB**，比两种 frp 配置的各场景中位数低约 **46% 至 47%**。sertun 用一个 **4.88 MiB** 的二进制兼任客户端与服务端；本次对照的 frpc 为 14.45 MiB，frps 为 17.93 MiB。
+
+环境：Apple M5 Pro、24 GiB RAM、macOS 27.0.1。sertun 基于 `373b28b`，frp v0.71.1，Mihomo v1.19.32。每组 3 轮，每轮新建进程，分别运行 3s 单连接、3s 的 8 连接负载和 100 个短连接。下表为各轮结果的中位数，吞吐按收到的回显载荷计数一次，单位 MiB/s。
+
+| 链路 | 配置 | 空闲隧道 RSS（MiB） | 单连接（MiB/s） | 8 连接（MiB/s） | 短连接 p95（ms） |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 直连 | sertun | 24.47 | 427.8 | 653.6 | 0.89 |
+| 直连 | frp 独立连接 | 45.98 | 418.6 | 499.8 | 0.73 |
+| 直连 | frp 复用 | 46.11 | 663.9 | 477.1 | 0.83 |
+| Mihomo DIRECT | sertun | 24.52 | 305.6 | 472.2 | 1.25 |
+| Mihomo DIRECT | frp 独立连接 | 46.16 | 315.0 | 333.1 | 0.87 |
+| Mihomo DIRECT | frp 复用 | 46.45 | 608.6 | 281.1 | 0.80 |
+| Mihomo AnyTLS | sertun | 24.58 | 230.3 | 298.2 | 1.25 |
+| Mihomo AnyTLS | frp 独立连接 | 46.39 | 221.8 | 297.3 | 1.05 |
+| Mihomo AnyTLS | frp 复用 | 46.19 | 425.3 | 192.7 | 0.97 |
+| Mihomo HY2 | sertun | 24.75 | 83.5 | 38.4 | 1.42 |
+| Mihomo HY2 | frp 独立连接 | 46.38 | 95.4 | 38.3 | 0.88 |
+| Mihomo HY2 | frp 复用 | 46.05 | 88.5 | 88.7 | 0.90 |
+
+sertun 在这次直连和 AnyTLS 的 8 连接负载中高于 frp 复用；frp 复用的单连接吞吐在四种链路中都更高，HY2 的 8 连接吞吐约为 sertun 的 2.3 倍。frp 的短连接 p95 也更低。选型时应同时考虑这些差异。
+
+RSS 仅统计隧道客户端与服务端，Mihomo 开销单独记录，不能将上述降幅理解为整套代理的内存降幅。所有端点均在本机回环网络，包括真实运行的 AnyTLS / HY2 加密链路；结果不能推断公网、丢包链路或其他系统的性能。sertun 使用 Go 1.27.2，frp / Mihomo 官方二进制使用 Go 1.26.8，本次没有控制编译器版本。
+
+[完整结果与波动范围](bench/results/2026-10-18-macos-arm64.md)包含 CPU 与外层代理；[原始 JSON](bench/results/2026-10-18-macos-arm64.json)保留全部 36 组结果、负载 RSS 与逐请求延迟。复现方法、指标定义与限制见 [benchmark 说明](bench/README.md)。
+
+```sh
+go run ./cmd/sertun-bench -trials 3 -duration 3s -short-count 100 -parallel 8 \
+  -output bench/results/local.json
+```
+
 ## 构建
 
 需要 Go 1.27.2 或更新版本，运行时不需要 Go。
@@ -96,4 +128,4 @@ go vet ./...
 
 测试采用 MVP 加合理增量，具体行为基线和按改动选择检查的方式由测试原则维护。
 
-仓库提供三个系统的 CI 配置。交叉构建只证明能够编译；各系统实际运行与真实代理部署仍需单独验证。当前验证记录见 [VALIDATION.md](VALIDATION.md)。
+Linux、Windows、macOS 的功能测试已在 CI 实际运行并通过；本地 Mihomo DIRECT、AnyTLS、HY2 的回显与性能测量已在 macOS arm64 完成。真实公网节点、故障恢复与外层半关闭仍需独立验证。具体证据与边界见 [VALIDATION.md](VALIDATION.md)。
