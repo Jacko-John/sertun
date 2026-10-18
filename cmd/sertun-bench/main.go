@@ -21,7 +21,6 @@ func main() {
 	flag.DurationVar(&options.Duration, "duration", 2*time.Second, "duration per bulk phase")
 	flag.IntVar(&options.ShortCount, "short-count", 100, "sequential short connections per trial")
 	flag.IntVar(&options.Parallel, "parallel", 8, "streams in the parallel phase")
-	flag.StringVar(&options.BaselineRef, "baseline-ref", "", "optional Git revision to rebuild and compare with the current sertun")
 	output := flag.String("output", "bench/results/local.json", "new JSON output path; also writes Markdown")
 	flag.Parse()
 	options.Scenarios = strings.Split(*scenarios, ",")

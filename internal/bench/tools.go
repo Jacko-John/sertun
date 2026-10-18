@@ -24,7 +24,7 @@ const (
 	mihomoVersion = "v1.19.32"
 )
 
-type tools struct{ sertun, baseline, frpc, frps, mihomo string }
+type tools struct{ sertun, frpc, frps, mihomo string }
 
 // ToolInfo records executable provenance without publishing local file paths.
 type ToolInfo struct {

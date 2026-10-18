@@ -35,18 +35,10 @@ func TestSummaryRetainsSlowTrials(t *testing.T) {
 	if percentile(values, 0.50) != 2 || percentile(values, 0.95) != 100 || !slices.Equal(values, original) {
 		t.Fatal("percentile definition or source observations changed")
 	}
-	trials := []Trial{
-		{Scenario: "direct", Variant: "sertun", Single: BulkResult{MiBPerSecond: 100, Resources: Resources{TunnelCPUPercent: 100}}},
-		{Scenario: "direct", Variant: "sertun", Single: BulkResult{MiBPerSecond: 1, Resources: Resources{TunnelCPUPercent: 10}}},
-		{Scenario: "direct", Variant: "sertun", Single: BulkResult{MiBPerSecond: 3, Resources: Resources{TunnelCPUPercent: 300}}},
-		{Scenario: "direct", Variant: "sertun-baseline", Single: BulkResult{MiBPerSecond: 2}},
-	}
+	trials := []Trial{{Scenario: "direct", Variant: "sertun", Single: BulkResult{MiBPerSecond: 100}}, {Scenario: "direct", Variant: "sertun", Single: BulkResult{MiBPerSecond: 1}}, {Scenario: "direct", Variant: "sertun", Single: BulkResult{MiBPerSecond: 3}}}
 	summary := summarize(trials, []string{"direct"})
-	if len(summary) != 2 || summary[0].Trials != 3 || summary[0].SingleThroughput != (Metric{Median: 3, Min: 1, Max: 100}) || summary[1].Variant != "sertun-baseline" {
+	if len(summary) != 1 || summary[0].Trials != 3 || summary[0].SingleThroughput != (Metric{Median: 3, Min: 1, Max: 100}) {
 		t.Fatalf("summary discarded an observation: %+v", summary)
-	}
-	if summary[0].SingleTunnelCost != (Metric{Median: 102.4, Min: 10.24, Max: 1024}) {
-		t.Fatalf("CPU cost must normalize each trial before aggregation: %+v", summary[0].SingleTunnelCost)
 	}
 }
 

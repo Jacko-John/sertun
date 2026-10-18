@@ -80,13 +80,8 @@ func TestReverseTCP(t *testing.T) {
 					t.Error(err)
 				}
 			}
-			// Cover promotion and EOF just below/at/above the macOS buffer
-			// threshold, including a response sent only after request EOF.
-			for _, size := range []int{7, (1 << 20) - 1, 1 << 20, (1 << 20) + 1} {
-				payload := bytes.Repeat([]byte("r"), size)
-				if err := exchange(mapped(t, srv, "after-eof"), payload, append([]byte("reply:"), payload...)); err != nil {
-					t.Fatalf("after EOF, %d bytes: %v", size, err)
-				}
+			if err := exchange(mapped(t, srv, "after-eof"), []byte("request"), []byte("reply:request")); err != nil {
+				t.Fatal(err)
 			}
 			if useProxy && requests.Load() < 2 {
 				t.Fatal("business connections did not use CONNECT")

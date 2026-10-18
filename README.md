@@ -6,33 +6,7 @@ sertun 负责服务注册、连接配对与字节转发。外层代理独立运�
 
 ## 与 frp 的性能对照
 
-适合已经运行 AnyTLS / HY2、只需要反向映射 SSH 或 Web 端口的部署。macOS arm64 的 sertun 二进制约为 **4.88 MiB**，兼任客户端与服务端；对照的 frpc 为 14.45 MiB，frps 为 17.93 MiB。
-
-### 直连单连接优化
-
-在同一台 Apple M5 Pro、24 GiB RAM、macOS 27.0.1 上，用 Go 1.27.2 分别编译优化前的 `34d5a97` 与当前代码，交错运行 4 轮、每个负载阶段 4s。单连接吞吐中位数提高 **24.7%**，单位有效数据的隧道 CPU 成本下降 **23.6%**。下表均为中位数，RSS 统计客户端与服务端之和。
-
-| 配置 | 单连接吞吐（MiB/s） | 单连接 CPU 成本（核秒/GiB） | 空闲 RSS（MiB） | 单连接负载 RSS（MiB） |
-| --- | ---: | ---: | ---: | ---: |
-| sertun 优化后 | 553.7 | 3.74 | 23.35 | 25.91 |
-| sertun 优化前 | 444.1 | 4.90 | 24.46 | 32.78 |
-| frp 独立连接 | 461.8 | 4.69 | 45.80 | 53.08 |
-| frp 复用 | 662.9 | 4.80 | 46.30 | 84.40 |
-
-优化针对 macOS 的用户态 TCP 复制：每个方向先用可复用的 32 KiB 缓冲，累计传输 1 MiB 后切换到 256 KiB。大流量转发减少读写调用，短流保持原来的缓冲预算。大缓冲也有代价：本次 8 连接负载 RSS 从 33.16 增至 36.91 MiB。Linux / Windows 未采用这项缓冲策略。
-
-frp 复用的单连接吞吐仍更高，sertun 的单位数据 CPU 成本较低。优化后单连接吞吐四轮范围为 455.1 至 597.0 MiB/s，优化前为 422.3 至 447.8 MiB/s；本机短时结果存在波动。frp 使用 Go 1.26.8 官方二进制，与 sertun 的编译器不同；优化前后两个 sertun 的工具链一致。
-
-[完整对照与范围](bench/results/2026-10-18-direct-copy.md)、[原始 JSON](bench/results/2026-10-18-direct-copy.json)保留全部 16 组结果。复现：
-
-```sh
-go run ./cmd/sertun-bench -scenarios direct -trials 4 -duration 4s \
-  -baseline-ref 34d5a97 -output bench/results/direct-local.json
-```
-
-### 原始四链路基线
-
-以下数据对应优化前的 `373b28b`，用于保留原始直连与代理对照。本轮只优化直连单连接，尚未对优化后的 Mihomo 链路重新测量。原始基线中，sertun 的空闲 RSS 比两种 frp 配置的各场景中位数低约 46% 至 47%。
+适合已经运行 AnyTLS / HY2、只需要反向映射 SSH 或 Web 端口的部署。在本次 macOS arm64 基准中，sertun 的客户端与服务端空闲 RSS 合计为 **24.5 至 24.8 MiB**，比两种 frp 配置的各场景中位数低约 **46% 至 47%**。sertun 用一个 **4.88 MiB** 的二进制兼任客户端与服务端；本次对照的 frpc 为 14.45 MiB，frps 为 17.93 MiB。
 
 环境：Apple M5 Pro、24 GiB RAM、macOS 27.0.1。sertun 基于 `373b28b`，frp v0.71.1，Mihomo v1.19.32。每组 3 轮，每轮新建进程，分别运行 3s 单连接、3s 的 8 连接负载和 100 个短连接。下表为各轮结果的中位数，吞吐按收到的回显载荷计数一次，单位 MiB/s。
 

@@ -1,10 +1,9 @@
-// Package relay transfers raw payloads while preserving cancellation and TCP
-// half-close. Platform copy policies remain separate from connection ownership.
 package relay
 
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 )
 
@@ -18,7 +17,7 @@ func Bridge(ctx context.Context, a, b net.Conn) error {
 	defer stop()
 	defer closeBoth()
 	copyDirection := func(dst, src net.Conn) error {
-		_, err := copyPayload(dst, src)
+		_, err := io.Copy(dst, src)
 		if err == nil {
 			if writer, ok := dst.(interface{ CloseWrite() error }); ok {
 				err = writer.CloseWrite()
