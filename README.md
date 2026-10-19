@@ -6,13 +6,13 @@ sertun 是一个轻量的 TCP 反向端口映射工具。客户端和服务端�
 
 ## 下载
 
-发布包在 [GitHub Releases](https://github.com/Jacko-John/sertun/releases)。v0.1.0 提供六个目标：
+发布包在 [GitHub Releases](https://github.com/Jacko-John/sertun/releases)。v0.1.1 提供六个目标：
 
 | 系统 | 架构 | 文件 |
 | --- | --- | --- |
-| Linux | amd64 / arm64 | `sertun_0.1.0_linux_<arch>.tar.gz` |
-| macOS | amd64 / arm64 | `sertun_0.1.0_darwin_<arch>.tar.gz` |
-| Windows | amd64 / arm64 | `sertun_0.1.0_windows_<arch>.zip` |
+| Linux | amd64 / arm64 | `sertun_0.1.1_linux_<arch>.tar.gz` |
+| macOS | amd64 / arm64 | `sertun_0.1.1_darwin_<arch>.tar.gz` |
+| Windows | amd64 / arm64 | `sertun_0.1.1_windows_<arch>.zip` |
 
 包里有可执行文件、两份示例配置和[依赖许可声明](THIRD_PARTY_NOTICES.txt)，运行时不需要安装 Go。发布页的 `SHA256SUMS` 可以用来校验下载文件。
 
@@ -93,7 +93,7 @@ go test -race ./...
 go vet ./...
 ```
 
-Windows 构建时把输出改成 `bin/sertun.exe`。Linux 和 macOS 可以用 `make build VERSION=v0.1.0` 构建精简二进制，用 `make dist VERSION=v0.1.0` 生成六个平台的发布包和校验文件，细节见 [发布流程](docs/RELEASING.md)。
+Windows 构建时把输出改成 `bin/sertun.exe`。Linux 和 macOS 可以用 `make build VERSION=v0.1.1` 构建精简二进制，用 `make dist VERSION=v0.1.1` 生成六个平台的发布包和校验文件，细节见 [发布流程](docs/RELEASING.md)。
 
 ## 当前限制
 

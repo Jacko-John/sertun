@@ -16,17 +16,17 @@
 在仓库根目录运行，需要 Go、POSIX shell、`tar`、`zip`，以及 `sha256sum` 或 `shasum`：
 
 ```sh
-make dist VERSION=v0.1.0
+make dist VERSION=v0.1.1
 ```
 
-也可以直接跑 `sh scripts/dist.sh v0.1.0`。输出在 `dist/v0.1.0/`，包括 Linux / macOS 的 tar.gz、Windows 的 zip，共六个包和 `SHA256SUMS`。
+也可以直接跑 `sh scripts/dist.sh v0.1.1`。输出在 `dist/v0.1.1/`，包括 Linux / macOS 的 tar.gz、Windows 的 zip，共六个包和 `SHA256SUMS`。
 
 每个包里只有对应平台的可执行文件、两份示例配置、简短使用说明和依赖许可声明。构建使用 `CGO_ENABLED=0`、`-trimpath`、`-buildvcs=false` 和精简链接参数，不嵌入本机源码路径或工作区状态。构建环境和 Go 版本仍会影响产物，不承诺不同工具链得到相同哈希。
 
 校验下载文件：
 
 ```sh
-cd dist/v0.1.0
+cd dist/v0.1.1
 shasum -a 256 -c SHA256SUMS
 # Linux 也可以用 sha256sum -c SHA256SUMS
 ```
