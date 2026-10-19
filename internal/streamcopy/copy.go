@@ -15,6 +15,7 @@ const (
 	promoteAfter    = 1 << 20
 )
 
+// Pool entries are shared across connections; the GC may reclaim idle ones.
 var smallBuffers = sync.Pool{New: func() any { return new([smallBufferSize]byte) }}
 var largeBuffers = sync.Pool{New: func() any { return new([largeBufferSize]byte) }}
 var errInvalidWrite = errors.New("streamcopy: invalid write count")

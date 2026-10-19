@@ -1,5 +1,6 @@
 // Topology generation uses minimal explicit settings and ephemeral credentials.
 // Both compared tools reach exactly the same isolated outer proxy topology.
+
 package bench
 
 import (

@@ -1,5 +1,6 @@
 // Buffered TCP connections preserve bytes read ahead during a handshake while
 // allowing Copy to recover the native connection once those bytes are drained.
+
 package streamcopy
 
 import (
@@ -20,6 +21,16 @@ func WithReadBuffer(conn *net.TCPConn, reader *bufio.Reader) net.Conn {
 	return &bufferedConn{TCPConn: conn, reader: reader}
 }
 
+// bufferedConn must stay a net.Conn and keep both copy specializations so
+// io.Copy cannot bypass the buffered prefix.
+var (
+	_ net.Conn      = (*bufferedConn)(nil)
+	_ io.WriterTo   = (*bufferedConn)(nil)
+	_ io.ReaderFrom = (*bufferedConn)(nil)
+)
+
+// bufferedConn serves the handshake read-ahead before the socket itself. It
+// embeds *net.TCPConn and overrides Read, WriteTo, and ReadFrom.
 type bufferedConn struct {
 	*net.TCPConn
 	readMu sync.Mutex
@@ -60,6 +71,7 @@ func (c *bufferedConn) writeBuffered(dst io.Writer) (int64, error) {
 	if c.reader == nil {
 		return 0, nil
 	}
+	// size bytes are already buffered, so Peek and Discard cannot fail.
 	size := c.reader.Buffered()
 	data, _ := c.reader.Peek(size)
 	written, err := dst.Write(data)

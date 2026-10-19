@@ -1,3 +1,5 @@
+// Command sertun runs the mapping server or the reverse client. Configuration
+// is loaded and validated before any port is opened.
 package main
 
 import (
@@ -20,6 +22,7 @@ import (
 
 var version = "dev"
 
+// main prints one error and exits non-zero unless the command succeeded.
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -32,6 +35,8 @@ func main() {
 	}
 }
 
+// run dispatches one command line. Output streams are explicit so the
+// command stays testable.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		usage(stderr)
@@ -100,6 +105,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return cli.Run(ctx)
 }
 
+// usage writes the command summary.
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   sertun server [-c server.toml] [-check] [-debug]

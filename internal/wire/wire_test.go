@@ -1,3 +1,5 @@
+// Tests cover frame bounds, version checks, and payload handoff.
+
 package wire
 
 import (
@@ -24,7 +26,7 @@ func TestFrameLeavesPayloadUntouched(t *testing.T) {
 
 func TestRejectInvalidFrame(t *testing.T) {
 	oversized := make([]byte, 4)
-	binary.BigEndian.PutUint32(oversized, MaxMessageSize+1)
+	binary.BigEndian.PutUint32(oversized, maxMessageSize+1)
 	wrongVersion := []byte(`{"v":99,"type":"login"}`)
 	frame := make([]byte, 4+len(wrongVersion))
 	binary.BigEndian.PutUint32(frame, uint32(len(wrongVersion)))
@@ -34,4 +36,14 @@ func TestRejectInvalidFrame(t *testing.T) {
 			t.Fatal("invalid frame accepted")
 		}
 	}
+}
+
+// FuzzRead keeps arbitrary bytes inside the frame size and error contract.
+func FuzzRead(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 4, 'n', 'u', 'l', 'l'})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = Read(bytes.NewReader(data))
+	})
 }

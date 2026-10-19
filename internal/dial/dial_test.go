@@ -1,3 +1,5 @@
+// Tests cover CONNECT authentication, cancellation, and read-ahead handling.
+
 package dial
 
 import (

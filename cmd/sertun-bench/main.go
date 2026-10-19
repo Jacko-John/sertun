@@ -1,4 +1,6 @@
-// sertun-bench is an opt-in local comparison harness, separate from sertun.
+// Command sertun-bench runs the opt-in local comparison harness. It builds the
+// production sertun binary, starts isolated tunnel and proxy processes, and
+// refuses to overwrite an existing result file.
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"sertun/internal/bench"
 )
 
+// main parses the workload, runs it, and saves both report formats.
 func main() {
 	options := bench.Options{}
 	scenarios := flag.String("scenarios", "direct,mihomo-direct,mihomo-anytls,mihomo-hy2", "comma-separated local scenarios")

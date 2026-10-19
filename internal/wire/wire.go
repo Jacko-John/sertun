@@ -1,3 +1,6 @@
+// Package wire encodes the control frames shared by client and server. A frame
+// is a four-byte big-endian length followed by a bounded JSON message; the
+// payload itself travels outside this encoding.
 package wire
 
 import (
@@ -13,10 +16,11 @@ import (
 )
 
 const (
-	Version        = 1
-	MaxMessageSize = 16 * 1024
+	version        = 1
+	maxMessageSize = 16 * 1024
 )
 
+// Message is one control frame. Only the fields relevant to Type are set.
 type Message struct {
 	Version  int      `json:"v"`
 	Type     string   `json:"type"`
@@ -38,7 +42,7 @@ func Read(r io.Reader) (Message, error) {
 		return message, err
 	}
 	n := binary.BigEndian.Uint32(header[:])
-	if n == 0 || n > MaxMessageSize {
+	if n == 0 || n > maxMessageSize {
 		return message, fmt.Errorf("invalid control message size: %d", n)
 	}
 	body := make([]byte, n)
@@ -46,22 +50,23 @@ func Read(r io.Reader) (Message, error) {
 		return message, err
 	}
 	if err := json.Unmarshal(body, &message); err != nil {
-		return message, fmt.Errorf("invalid control message")
+		return message, fmt.Errorf("invalid control message: %w", err)
 	}
-	if message.Version != Version {
+	if message.Version != version {
 		return message, fmt.Errorf("unsupported protocol version: %d", message.Version)
 	}
 	return message, nil
 }
 
+// Write serializes one frame and handles short writes.
 func Write(w io.Writer, message Message) error {
-	message.Version = Version
+	message.Version = version
 	body, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
-	if len(body) > MaxMessageSize {
-		return fmt.Errorf("control message exceeds %d bytes", MaxMessageSize)
+	if len(body) > maxMessageSize {
+		return fmt.Errorf("control message exceeds %d bytes", maxMessageSize)
 	}
 	frame := make([]byte, 4+len(body))
 	binary.BigEndian.PutUint32(frame[:4], uint32(len(body)))
@@ -80,12 +85,14 @@ func Write(w io.Writer, message Message) error {
 }
 
 // Sender serializes concurrent control writes and bounds a stalled peer's write.
+// Timeout must be positive; Send refreshes the write deadline on every call.
 type Sender struct {
-	Conn    net.Conn
-	Timeout time.Duration
+	Conn    net.Conn      // Control connection owned by the caller.
+	Timeout time.Duration // Per-write deadline; must be positive.
 	mu      sync.Mutex
 }
 
+// Send writes one frame under the configured deadline.
 func (s *Sender) Send(message Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,6 +102,7 @@ func (s *Sender) Send(message Message) error {
 	return Write(s.Conn, message)
 }
 
+// NewID returns a 128-bit random identifier as lowercase hex.
 func NewID() (string, error) {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {

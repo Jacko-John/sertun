@@ -1,5 +1,6 @@
 // Package bench runs reproducible process-level comparisons outside the product
-// forwarding path. It downloads pinned official tools into a verified cache.
+// forwarding path. It downloads pinned official tools into a verified cache and
+// prepares only the tools the requested scenarios need.
 package bench
 
 import (
@@ -41,8 +42,10 @@ type releaseAsset struct {
 	Digest string `json:"digest"`
 }
 
-// prepareTools verifies cached executables or extracts checksum-verified assets.
-func prepareTools(ctx context.Context) (tools, error) {
+// prepareTools verifies cached executables or extracts checksum-verified
+// assets. frp is always required; Mihomo is only needed by scenarios that
+// route through a local proxy.
+func prepareTools(ctx context.Context, scenarios []string) (tools, error) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return tools{}, fmt.Errorf("benchmark resource sampling currently supports macOS and Linux")
 	}
@@ -51,11 +54,17 @@ func prepareTools(ctx context.Context) (tools, error) {
 		return tools{}, err
 	}
 	cache = filepath.Join(cache, "sertun-bench")
+
 	frpAsset := fmt.Sprintf("frp_%s_%s_%s.tar.gz", strings.TrimPrefix(frpVersion, "v"), runtime.GOOS, runtime.GOARCH)
 	frpDir, err := cachedRelease(ctx, cache, "fatedier/frp", frpVersion, []string{frpAsset}, []string{"frpc", "frps"})
 	if err != nil {
 		return tools{}, err
 	}
+	result := tools{frpc: filepath.Join(frpDir, "frpc"), frps: filepath.Join(frpDir, "frps")}
+	if !needsMihomo(scenarios) {
+		return result, nil
+	}
+
 	mihomoNames := []string{fmt.Sprintf("mihomo-%s-%s-%s.gz", runtime.GOOS, runtime.GOARCH, mihomoVersion)}
 	if runtime.GOOS == "linux" {
 		suffix := map[string]string{"amd64": "amd64-v1", "arm64": "arm64-v8"}[runtime.GOARCH]
@@ -67,7 +76,18 @@ func prepareTools(ctx context.Context) (tools, error) {
 	if err != nil {
 		return tools{}, err
 	}
-	return tools{frpc: filepath.Join(frpDir, "frpc"), frps: filepath.Join(frpDir, "frps"), mihomo: filepath.Join(mihomoDir, "mihomo")}, nil
+	result.mihomo = filepath.Join(mihomoDir, "mihomo")
+	return result, nil
+}
+
+// needsMihomo reports whether any selected scenario uses the local proxy.
+func needsMihomo(scenarios []string) bool {
+	for _, scenario := range scenarios {
+		if strings.HasPrefix(scenario, "mihomo-") {
+			return true
+		}
+	}
+	return false
 }
 
 // cachedRelease validates cached hashes; incomplete caches are rebuilt in place.
@@ -170,9 +190,17 @@ func downloadAsset(ctx context.Context, dir string, asset releaseAsset) (string,
 	hash := sha256.New()
 	_, copyErr := io.Copy(io.MultiWriter(f, hash), response.Body)
 	closeErr := f.Close()
-	if copyErr != nil || closeErr != nil || hex.EncodeToString(hash.Sum(nil)) != strings.TrimPrefix(asset.Digest, "sha256:") {
+	if copyErr != nil {
 		os.Remove(path)
-		return "", fmt.Errorf("download or checksum verification failed for %s: %v / %v", asset.Name, copyErr, closeErr)
+		return "", fmt.Errorf("download %s: %w", asset.Name, copyErr)
+	}
+	if closeErr != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("close %s: %w", asset.Name, closeErr)
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != strings.TrimPrefix(asset.Digest, "sha256:") {
+		os.Remove(path)
+		return "", fmt.Errorf("checksum mismatch for %s", asset.Name)
 	}
 	return path, nil
 }

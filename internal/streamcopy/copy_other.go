@@ -1,6 +1,7 @@
 //go:build !linux
 
 // Platforms without Go's TCP splice path use adaptive user-space buffers.
+
 package streamcopy
 
 import "net"

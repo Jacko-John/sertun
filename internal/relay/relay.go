@@ -10,7 +10,9 @@ import (
 	"sertun/internal/streamcopy"
 )
 
-// Bridge owns both connections until both directions finish or ctx is canceled.
+// Bridge owns both connections until both directions finish or ctx is
+// canceled. A clean EOF half-closes the opposite direction; any error closes
+// both connections so the remaining copy cannot block forever.
 func Bridge(ctx context.Context, a, b net.Conn) error {
 	closeBoth := func() {
 		a.Close()
@@ -19,6 +21,7 @@ func Bridge(ctx context.Context, a, b net.Conn) error {
 	stop := context.AfterFunc(ctx, closeBoth)
 	defer stop()
 	defer closeBoth()
+
 	copyDirection := func(dst, src net.Conn) error {
 		_, err := streamcopy.Copy(dst, src)
 		if err == nil {
@@ -33,6 +36,7 @@ func Bridge(ctx context.Context, a, b net.Conn) error {
 		}
 		return err
 	}
+
 	result := make(chan error, 1)
 	go func() { result <- copyDirection(a, b) }()
 	err := copyDirection(b, a)

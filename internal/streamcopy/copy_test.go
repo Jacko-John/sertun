@@ -1,5 +1,6 @@
 // Copy tests cover stream integrity and progress on errors. Relay integration
 // tests own cancellation and half-close, so those lifecycles are not duplicated.
+
 package streamcopy
 
 import (
@@ -174,3 +175,48 @@ func (w *limitedWriter) Write(p []byte) (int, error) {
 	n, _ := w.data.Write(p)
 	return n, w.err
 }
+
+// TestCopyRejectsInvalidWriteCount covers writers that violate the io.Writer
+// count contract. Nothing may be counted as delivered.
+func TestCopyRejectsInvalidWriteCount(t *testing.T) {
+	for _, count := range []int{-1, 2} {
+		// Hide bytes.Reader's WriteTo so Copy reaches the buffered loop.
+		source := plainReader{bytes.NewReader([]byte("x"))}
+		n, err := Copy(&badCountWriter{count: count}, source)
+		if n != 0 || !errors.Is(err, errInvalidWrite) {
+			t.Fatalf("count %d: got %d, %v; want 0, %v", count, n, err, errInvalidWrite)
+		}
+	}
+}
+
+// TestBufferedWriteRejectsInvalidCount keeps the whole prefix readable when a
+// writer reports an impossible count.
+func TestBufferedWriteRejectsInvalidCount(t *testing.T) {
+	producer, input := tcpPair(t)
+	payload := []byte("buffered tunnel payload")
+	if _, err := producer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	producer.CloseWrite()
+	reader := bufio.NewReader(input)
+	if _, err := reader.Peek(len(payload)); err != nil {
+		t.Fatal(err)
+	}
+	conn := WithReadBuffer(input, reader)
+	n, err := Copy(&badCountWriter{count: len(payload) + 1}, conn)
+	if n != 0 || !errors.Is(err, errInvalidWrite) {
+		t.Fatalf("buffered write: %d bytes, %v; want 0, %v", n, err, errInvalidWrite)
+	}
+	remaining, err := io.ReadAll(conn)
+	if err != nil || !bytes.Equal(remaining, payload) {
+		t.Fatalf("prefix after invalid write: %q, %v", remaining, err)
+	}
+}
+
+type badCountWriter struct{ count int }
+
+// Write returns an invalid byte count without touching the payload.
+func (w *badCountWriter) Write([]byte) (int, error) { return w.count, nil }
+
+// plainReader exposes only Read, selecting the package's buffered loop.
+type plainReader struct{ io.Reader }

@@ -1,5 +1,6 @@
 // TCP copy benchmarks isolate the copy policy with real sockets.
 // Their throughput describes one relay stage, not an end-to-end tunnel.
+
 package streamcopy
 
 import (

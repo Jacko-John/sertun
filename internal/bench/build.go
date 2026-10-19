@@ -1,5 +1,6 @@
 // Build helpers keep optimization comparisons on the same compiler and flags.
 // Historical sources are exported into a disposable directory, never checked out.
+
 package bench
 
 import (

@@ -1,5 +1,6 @@
 // Workloads measure complete reverse connections and validated TCP echo traffic.
 // Setup happens outside bulk timing; each phase owns and closes its sockets.
+
 package bench
 
 import (
@@ -15,6 +16,9 @@ import (
 )
 
 const payloadByte = 0x5a
+
+// echoPayload is shared read-only by every short request.
+var echoPayload = bytes.Repeat([]byte{payloadByte}, 64)
 
 type echoServer struct {
 	listener net.Listener
@@ -78,15 +82,14 @@ func echoOnce(ctx context.Context, address string) (time.Duration, error) {
 		deadline = limit
 	}
 	_ = conn.SetDeadline(deadline)
-	payload := bytes.Repeat([]byte{payloadByte}, 64)
-	if _, err := io.Copy(conn, bytes.NewReader(payload)); err != nil {
+	if _, err := io.Copy(conn, bytes.NewReader(echoPayload)); err != nil {
 		return 0, err
 	}
-	got := make([]byte, len(payload))
+	got := make([]byte, len(echoPayload))
 	if _, err := io.ReadFull(conn, got); err != nil {
 		return 0, err
 	}
-	if !bytes.Equal(payload, got) {
+	if !bytes.Equal(echoPayload, got) {
 		return 0, fmt.Errorf("echo response mismatch")
 	}
 	return time.Since(start), nil
@@ -165,6 +168,40 @@ func (r BulkResult) cpuCost(includeProxy bool) float64 {
 	return percent / 100 / (r.MiBPerSecond / 1024)
 }
 
+// bulkCompletion reports one direction's result for a bulk connection.
+type bulkCompletion struct {
+	bytes int64
+	err   error
+}
+
+// writeBulk streams the shared payload until the phase deadline stops it.
+func writeBulk(conn net.Conn, payload []byte, end time.Time, done chan<- bulkCompletion) {
+	for {
+		if _, err := conn.Write(payload); err != nil {
+			done <- bulkCompletion{err: phaseError(err, end)}
+			return
+		}
+	}
+}
+
+// readBulk validates the echo and counts received bytes until the deadline.
+func readBulk(conn net.Conn, want []byte, end time.Time, done chan<- bulkCompletion) {
+	buffer := make([]byte, len(want))
+	var received int64
+	for {
+		n, err := conn.Read(buffer)
+		if !bytes.Equal(buffer[:n], want[:n]) {
+			done <- bulkCompletion{err: fmt.Errorf("bulk echo mismatch")}
+			return
+		}
+		received += int64(n)
+		if err != nil {
+			done <- bulkCompletion{bytes: received, err: phaseError(err, end)}
+			return
+		}
+	}
+}
+
 // bulk opens connections before timing and validates every received byte. A
 // common deadline ends readers and writers without depending on half-close.
 func bulk(ctx context.Context, address string, count int, duration time.Duration, children *processes) (BulkResult, error) {
@@ -201,39 +238,13 @@ func bulk(ctx context.Context, address string, count int, duration time.Duration
 			}
 		})
 		defer stopCancel()
-		type completion struct {
-			bytes int64
-			err   error
-		}
-		done := make(chan completion, count*2)
+		// One read-only payload is shared by every writer and verifier.
+		payload := bytes.Repeat([]byte{payloadByte}, 64<<10)
+		done := make(chan bulkCompletion, count*2)
 		for _, conn := range conns {
 			_ = conn.SetDeadline(end)
-			go func() {
-				payload := bytes.Repeat([]byte{payloadByte}, 64<<10)
-				for {
-					if _, err := conn.Write(payload); err != nil {
-						done <- completion{err: phaseError(err, end)}
-						return
-					}
-				}
-			}()
-			go func() {
-				buffer := make([]byte, 64<<10)
-				want := bytes.Repeat([]byte{payloadByte}, len(buffer))
-				var received int64
-				for {
-					n, err := conn.Read(buffer)
-					if !bytes.Equal(buffer[:n], want[:n]) {
-						done <- completion{err: fmt.Errorf("bulk echo mismatch")}
-						return
-					}
-					received += int64(n)
-					if err != nil {
-						done <- completion{bytes: received, err: phaseError(err, end)}
-						return
-					}
-				}
-			}()
+			go writeBulk(conn, payload, end, done)
+			go readBulk(conn, payload, end, done)
 		}
 		var firstErr error
 		for range count * 2 {

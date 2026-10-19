@@ -1,5 +1,6 @@
 // Reports preserve raw observations and derive all tables from those same
 // observations. No successful sample is selected or discarded by its score.
+
 package bench
 
 import (
@@ -76,7 +77,7 @@ func newReport(ctx context.Context, options Options, commit string, binaries too
 	if err != nil {
 		return nil, err
 	}
-	productStatus, err := exec.CommandContext(ctx, "git", "status", "--porcelain", "--", "cmd/sertun", "internal/client", "internal/server", "internal/config", "internal/dial", "internal/relay", "internal/wire", "go.mod", "go.sum").Output()
+	productStatus, err := exec.CommandContext(ctx, "git", "status", "--porcelain", "--", "cmd/sertun", "internal/client", "internal/server", "internal/config", "internal/dial", "internal/relay", "internal/streamcopy", "internal/wire", "go.mod", "go.sum").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +89,10 @@ func newReport(ctx context.Context, options Options, commit string, binaries too
 			GitCommit: commit, WorktreeDirty: len(status) != 0, ProductDirty: len(productStatus) != 0,
 		},
 	}
-	toolSources := []struct{ name, version, path string }{{"sertun", commit, binaries.sertun}, {"frpc", frpVersion, binaries.frpc}, {"frps", frpVersion, binaries.frps}, {"mihomo", mihomoVersion, binaries.mihomo}}
+	toolSources := []struct{ name, version, path string }{{"sertun", commit, binaries.sertun}, {"frpc", frpVersion, binaries.frpc}, {"frps", frpVersion, binaries.frps}}
+	if binaries.mihomo != "" {
+		toolSources = append(toolSources, struct{ name, version, path string }{"mihomo", mihomoVersion, binaries.mihomo})
+	}
 	if binaries.baseline != "" {
 		toolSources = append(toolSources, struct{ name, version, path string }{"sertun-baseline", options.BaselineRef, binaries.baseline})
 	}
@@ -186,7 +190,12 @@ func (r *Report) Save(path string) error {
 	if err := writeNewFile(path, append(data, '\n')); err != nil {
 		return err
 	}
-	return writeNewFile(strings.TrimSuffix(path, ".json")+".md", []byte(r.Markdown()))
+	markdownPath := strings.TrimSuffix(path, ".json") + ".md"
+	if err := writeNewFile(markdownPath, []byte(r.markdown())); err != nil {
+		os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // writeNewFile creates one report without replacing an existing result.
@@ -195,16 +204,20 @@ func writeNewFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	_, writeErr := f.Write(data)
-	closeErr := f.Close()
-	if writeErr != nil {
-		return writeErr
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
 	}
-	return closeErr
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return err
+	}
+	return nil
 }
 
-// Markdown derives readable medians and ranges directly from the JSON summary.
-func (r *Report) Markdown() string {
+// markdown derives readable medians and ranges from the JSON summary.
+func (r *Report) markdown() string {
 	var b strings.Builder
 	fmt.Fprint(&b, "# Local process benchmark\n\n")
 	e := r.Environment

@@ -23,6 +23,12 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
+      - name: Format and static analysis
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test -z "$(gofmt -l .)"
+          go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./cmd/sertun

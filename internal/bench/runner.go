@@ -1,5 +1,6 @@
 // The runner builds the production executable, starts isolated topologies, and
 // rotates comparison order. It never reads the user's proxy configuration.
+
 package bench
 
 import (
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,10 +38,19 @@ type Trial struct {
 	Parallel BulkResult  `json:"parallel"`
 }
 
-// Validate rejects expensive accidental workloads and unknown scenario names.
-func (o Options) Validate() error {
-	if o.Trials < 1 || o.Trials > 20 || o.Duration < 200*time.Millisecond || o.Duration > time.Minute || o.ShortCount < 1 || o.ShortCount > 10000 || o.Parallel < 2 || o.Parallel > 32 {
-		return fmt.Errorf("require trials 1..20, duration 200ms..1m, short-count 1..10000, parallel 2..32")
+// validate rejects expensive accidental workloads and unknown scenario names.
+func (o Options) validate() error {
+	if o.Trials < 1 || o.Trials > 20 {
+		return fmt.Errorf("trials must be 1..20")
+	}
+	if o.Duration < 200*time.Millisecond || o.Duration > time.Minute {
+		return fmt.Errorf("duration must be 200ms..1m")
+	}
+	if o.ShortCount < 1 || o.ShortCount > 10000 {
+		return fmt.Errorf("short-count must be 1..10000")
+	}
+	if o.Parallel < 2 || o.Parallel > 32 {
+		return fmt.Errorf("parallel must be 2..32")
 	}
 	if len(o.Scenarios) == 0 {
 		return fmt.Errorf("at least one scenario is required")
@@ -59,12 +70,12 @@ func (o Options) Validate() error {
 
 // Run returns a complete report only after all requested trials succeed.
 func Run(ctx context.Context, options Options, progress io.Writer) (*Report, error) {
-	if err := options.Validate(); err != nil {
+	if err := options.validate(); err != nil {
 		return nil, err
 	}
-	fmt.Fprintln(progress, "Preparing pinned frp and Mihomo tools (verified cache / official releases)...")
+	fmt.Fprintln(progress, "Preparing pinned external tools (verified cache / official releases)...")
 	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	binaries, err := prepareTools(downloadCtx)
+	binaries, err := prepareTools(downloadCtx, options.Scenarios)
 	cancel()
 	if err != nil {
 		return nil, err
@@ -100,29 +111,43 @@ func Run(ctx context.Context, options Options, progress io.Writer) (*Report, err
 		return nil, err
 	}
 	defer backend.close()
-	variants := []string{"sertun", "frp-plain", "frp-mux"}
-	if binaries.baseline != "" {
-		variants = []string{"sertun", "sertun-baseline", "frp-plain", "frp-mux"}
+	if err := runTrials(ctx, dir, backend.listener.Addr().String(), options, binaries, report, progress); err != nil {
+		return nil, err
 	}
+	report.FinishedAt = time.Now().UTC()
+	report.Summary = summarize(report.Trials, options.Scenarios)
+	return report, nil
+}
+
+// runTrials rotates the comparison order and appends every successful trial.
+func runTrials(ctx context.Context, dir, backend string, options Options, binaries tools, report *Report, progress io.Writer) error {
+	variants := comparedVariants(binaries)
 	for round := 1; round <= options.Trials; round++ {
-		// Rotate orders; N rounds give each of the N variants every position.
+		// Rotate the starting position each round. Every variant gets the same
+		// number of trials; full position balance needs as many rounds as variants.
 		for offset := range len(options.Scenarios) {
 			scenario := options.Scenarios[(offset+round-1)%len(options.Scenarios)]
 			for index := range len(variants) {
 				variant := variants[(index+round-1)%len(variants)]
 				fmt.Fprintf(progress, "Round %d/%d: %-14s %-9s ... ", round, options.Trials, scenario, variant)
-				trial, err := runTrial(ctx, dir, backend.listener.Addr().String(), scenario, variant, round, options, binaries)
+				trial, err := runTrial(ctx, dir, backend, scenario, variant, round, options, binaries)
 				if err != nil {
-					return nil, fmt.Errorf("round %d %s %s: %w", round, scenario, variant, err)
+					return fmt.Errorf("round %d %s %s: %w", round, scenario, variant, err)
 				}
 				report.Trials = append(report.Trials, trial)
 				fmt.Fprintf(progress, "RSS %.1f MiB; single %.1f / parallel %.1f MiB/s; p95 %.2f ms\n", trial.Idle.TunnelRSSMiB, trial.Single.MiBPerSecond, trial.Parallel.MiBPerSecond, trial.Short.P95MS)
 			}
 		}
 	}
-	report.FinishedAt = time.Now().UTC()
-	report.Summary = summarize(report.Trials, options.Scenarios)
-	return report, nil
+	return nil
+}
+
+// comparedVariants lists the implementations measured in every round.
+func comparedVariants(binaries tools) []string {
+	if binaries.baseline != "" {
+		return []string{"sertun", "sertun-baseline", "frp-plain", "frp-mux"}
+	}
+	return []string{"sertun", "frp-plain", "frp-mux"}
 }
 
 // runTrial owns its temporary directory and all children, even during startup.
@@ -181,13 +206,18 @@ func runTrial(ctx context.Context, root, backend, scenario, variant string, roun
 	return trial, children.alive()
 }
 
-// freePorts holds all reservations together to avoid selecting duplicate ports.
-// External programs cannot inherit them; a rare bind race fails the whole run.
+// freePorts holds TCP and UDP reservations together so each selected port is
+// free for both frp (TCP) and Hysteria 2 (UDP). External programs cannot
+// inherit them; a rare bind race fails the whole run.
 func freePorts(count int) ([]int, error) {
 	var listeners []net.Listener
+	var packets []*net.UDPConn
 	defer func() {
 		for _, listener := range listeners {
 			listener.Close()
+		}
+		for _, packet := range packets {
+			packet.Close()
 		}
 	}()
 	var ports []int
@@ -196,8 +226,14 @@ func freePorts(count int) ([]int, error) {
 		if err != nil {
 			return nil, err
 		}
+		address := listener.Addr().(*net.TCPAddr)
+		packet, err := net.ListenUDP("udp", &net.UDPAddr{IP: address.IP, Port: address.Port})
+		if err != nil {
+			return nil, err
+		}
 		listeners = append(listeners, listener)
-		ports = append(ports, listener.Addr().(*net.TCPAddr).Port)
+		packets = append(packets, packet)
+		ports = append(ports, address.Port)
 	}
 	return ports, nil
 }
@@ -233,13 +269,15 @@ func waitPort(ctx context.Context, address string, children *processes) error {
 	}
 }
 
-// platformInfo adds hardware details using only built-in OS commands.
+// platformInfo adds hardware details using only built-in OS commands. Memory
+// is normalized to a readable size so reports do not mix bytes and kilobytes.
 func platformInfo(ctx context.Context) (cpu, memory, system string) {
 	if runtime.GOOS == "darwin" {
 		for name, target := range map[string]*string{"machdep.cpu.brand_string": &cpu, "hw.memsize": &memory, "kern.osproductversion": &system} {
 			data, _ := exec.CommandContext(ctx, "sysctl", "-n", name).Output()
 			*target = strings.TrimSpace(string(data))
 		}
+		memory = formatMemory(memory, 1)
 	} else {
 		data, _ := os.ReadFile("/proc/cpuinfo")
 		for _, line := range strings.Split(string(data), "\n") {
@@ -252,7 +290,10 @@ func platformInfo(ctx context.Context) (cpu, memory, system string) {
 		data, _ = os.ReadFile("/proc/meminfo")
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.HasPrefix(line, "MemTotal:") {
-				memory = strings.TrimSpace(strings.TrimPrefix(line, "MemTotal:"))
+				fields := strings.Fields(strings.TrimPrefix(line, "MemTotal:"))
+				if len(fields) > 0 {
+					memory = formatMemory(fields[0], 1024)
+				}
 				break
 			}
 		}
@@ -260,4 +301,22 @@ func platformInfo(ctx context.Context) (cpu, memory, system string) {
 		system = strings.TrimSpace(string(data))
 	}
 	return
+}
+
+// formatMemory converts a count in unit bytes into a readable size. An
+// unparsable value is kept as-is so a report never silently loses it.
+func formatMemory(value string, unit uint64) string {
+	n, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return strings.TrimSpace(value)
+	}
+	bytes := n * unit
+	switch {
+	case bytes >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(bytes)/(1<<30))
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(bytes)/(1<<20))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }

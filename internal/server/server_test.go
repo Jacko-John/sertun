@@ -1,3 +1,6 @@
+// Tests cover the end-to-end reverse path, reconnects, limits, and one-time
+// pairing.
+
 package server
 
 import (
@@ -116,6 +119,73 @@ func TestRegistrationRejected(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestListenFailureReleasesBoundPorts covers a partial startup: the control
+// listener and every service bound before the conflict must be closed again.
+func TestListenFailureReleasesBoundPorts(t *testing.T) {
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+
+	cfg := serverConfig()
+	cfg.Clients[0].Services = []config.ServerService{
+		{Name: "first", Listen: "127.0.0.1:0"},
+		{Name: "blocked", Listen: held.Addr().String()},
+	}
+	srv, err := New(cfg, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Run(t.Context()); err == nil {
+		t.Fatal("expected the blocked service bind to fail")
+	}
+	if len(srv.listeners) != 1 {
+		t.Fatalf("bound %d service listeners, want 1", len(srv.listeners))
+	}
+	for _, address := range []string{srv.control.Addr().String(), srv.listeners[0].Addr().String()} {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			t.Fatalf("%s was not released: %v", address, err)
+		}
+		listener.Close()
+	}
+}
+
+// TestServiceListenerFailureStopsServer proves a runtime accept failure
+// cancels the server, closes the remaining listeners, and returns the error.
+func TestServiceListenerFailureStopsServer(t *testing.T) {
+	srv, err := New(serverConfig(), quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- srv.Run(ctx) }()
+	select {
+	case <-srv.ready:
+	case err := <-result:
+		t.Fatalf("server failed to start: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not start")
+	}
+	srv.listeners[0].Close()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("listener failure returned nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop after listener failure")
+	}
+	listener, err := net.Listen("tcp", srv.control.Addr().String())
+	if err != nil {
+		t.Fatalf("control port was not released: %v", err)
+	}
+	listener.Close()
 }
 
 func TestReconnectAndShutdown(t *testing.T) {

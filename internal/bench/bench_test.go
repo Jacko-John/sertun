@@ -1,5 +1,6 @@
 // These tests protect arithmetic used in published claims and socket cleanup.
 // Timing and throughput thresholds belong to benchmark results, not unit tests.
+
 package bench
 
 import (
@@ -61,5 +62,37 @@ func TestEchoWorkload(t *testing.T) {
 	result, err := shortConnections(ctx, server.listener.Addr().String(), 3)
 	if err != nil || result.Count != 3 || len(result.LatenciesMS) != 3 || result.P95MS < result.P50MS {
 		t.Fatalf("short workload = %+v, %v", result, err)
+	}
+}
+
+func TestFormatMemory(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		unit  uint64
+		want  string
+	}{
+		{"25769803776", 1, "24.0 GiB"},
+		{"16384000", 1024, "15.6 GiB"},
+		{"512", 1, "512 B"},
+		{"not-a-number", 1, "not-a-number"},
+	} {
+		if got := formatMemory(test.value, test.unit); got != test.want {
+			t.Fatalf("formatMemory(%q, %d) = %q; want %q", test.value, test.unit, got, test.want)
+		}
+	}
+}
+
+func TestScenarioToolNeeds(t *testing.T) {
+	for _, test := range []struct {
+		scenarios []string
+		mihomo    bool
+	}{
+		{[]string{"direct"}, false},
+		{[]string{"direct", "mihomo-hy2"}, true},
+		{[]string{"mihomo-direct"}, true},
+	} {
+		if got := needsMihomo(test.scenarios); got != test.mihomo {
+			t.Fatalf("needsMihomo(%v) = %t; want %t", test.scenarios, got, test.mihomo)
+		}
 	}
 }

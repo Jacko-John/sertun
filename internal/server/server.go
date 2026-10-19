@@ -1,3 +1,5 @@
+// Package server accepts client registrations, maps configured service ports,
+// pairs each visitor with a client work connection, and relays the payload.
 package server
 
 import (
@@ -14,6 +16,7 @@ import (
 	"sertun/internal/wire"
 )
 
+// Server owns the configured listeners, sessions, and visitor accounting.
 type Server struct {
 	cfg     config.Server
 	log     *slog.Logger
@@ -30,12 +33,16 @@ type Server struct {
 	ready     chan struct{}
 }
 
+// serviceListener binds one configured service to the client that serves it.
+// It embeds net.Listener to promote Accept, Close, and Addr.
 type serviceListener struct {
 	net.Listener
 	client  string
 	service string
 }
 
+// session is one authenticated control connection. ready and the counters
+// are protected by Server.mu.
 type session struct {
 	id      string
 	client  string
@@ -47,6 +54,7 @@ type session struct {
 	waiting int
 }
 
+// pending is one visitor waiting for a client work connection.
 type pending struct {
 	id      string
 	service string
@@ -56,6 +64,8 @@ type pending struct {
 	conn    chan net.Conn // Unbuffered: a timed-out receiver cannot orphan a socket.
 }
 
+// New validates cfg and builds the immutable client map. Run performs all
+// binding, so New never opens a port.
 func New(cfg config.Server, logger *slog.Logger) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -80,30 +90,14 @@ func New(cfg config.Server, logger *slog.Logger) (*Server, error) {
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	lc := &net.ListenConfig{KeepAlive: 30 * time.Second}
-	var err error
-	s.control, err = lc.Listen(ctx, "tcp", s.cfg.Listen)
-	if err != nil {
-		return fmt.Errorf("listen for tunnels: %w", err)
+	if err := s.listen(ctx); err != nil {
+		s.closeListeners()
+		return err
 	}
-	closeListeners := func() {
-		s.control.Close()
-		for _, listener := range s.listeners {
-			listener.Close()
-		}
-	}
-	defer closeListeners()
-	for _, client := range s.cfg.Clients {
-		for _, service := range client.Services {
-			listener, err := lc.Listen(ctx, "tcp", service.Listen)
-			if err != nil {
-				return fmt.Errorf("listen for %s/%s: %w", client.ID, service.Name, err)
-			}
-			s.listeners = append(s.listeners, serviceListener{listener, client.ID, service.Name})
-		}
-	}
-	stop := context.AfterFunc(ctx, closeListeners)
+	stop := context.AfterFunc(ctx, s.closeListeners)
 	defer stop()
+	defer s.closeListeners()
+
 	failures := make(chan error, 1)
 	fail := func(err error) {
 		select {
@@ -112,21 +106,13 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		cancel()
 	}
-	for _, listener := range s.listeners {
-		s.log.Info("mapping listening", "client", listener.client, "service", listener.service, "listen", listener.Addr())
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			if err := s.acceptService(ctx, listener); err != nil && ctx.Err() == nil {
-				fail(err)
-			}
-		}()
-	}
+	s.startServices(ctx, fail)
 	s.log.Info("tunnel listening", "listen", s.control.Addr())
 	close(s.ready)
 	if err := s.acceptTunnels(ctx); err != nil && ctx.Err() == nil {
 		fail(err)
 	}
+	// Cancel first; every accept, forward, and timer follows the same context.
 	cancel()
 	s.wg.Wait()
 	select {
@@ -137,6 +123,52 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
+// listen binds the control port and every configured service port.
+func (s *Server) listen(ctx context.Context) error {
+	lc := &net.ListenConfig{KeepAlive: 30 * time.Second}
+	var err error
+	s.control, err = lc.Listen(ctx, "tcp", s.cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("listen for tunnels: %w", err)
+	}
+	for _, client := range s.cfg.Clients {
+		for _, service := range client.Services {
+			listener, err := lc.Listen(ctx, "tcp", service.Listen)
+			if err != nil {
+				return fmt.Errorf("listen for %s/%s: %w", client.ID, service.Name, err)
+			}
+			s.listeners = append(s.listeners, serviceListener{listener, client.ID, service.Name})
+		}
+	}
+	return nil
+}
+
+// closeListeners releases every bound port. Repeated calls are harmless.
+func (s *Server) closeListeners() {
+	if s.control != nil {
+		s.control.Close()
+	}
+	for _, listener := range s.listeners {
+		listener.Close()
+	}
+}
+
+// startServices launches one accept loop per mapped service.
+func (s *Server) startServices(ctx context.Context, fail func(error)) {
+	for _, listener := range s.listeners {
+		s.log.Info("mapping listening", "client", listener.client, "service", listener.service, "listen", listener.Addr())
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			if err := s.acceptService(ctx, listener); err != nil && ctx.Err() == nil {
+				fail(err)
+			}
+		}()
+	}
+}
+
+// acceptTunnels closes a connection immediately when no handshake slot is
+// free, keeping unauthenticated work bounded.
 func (s *Server) acceptTunnels(ctx context.Context) error {
 	for {
 		conn, err := s.control.Accept()
@@ -156,6 +188,7 @@ func (s *Server) acceptTunnels(ctx context.Context) error {
 	}
 }
 
+// handleTunnel reads one handshake frame and routes it to login or attach.
 func (s *Server) handleTunnel(ctx context.Context, conn net.Conn) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { <-s.slots }) }
@@ -190,26 +223,17 @@ func (s *Server) handleTunnel(ctx context.Context, conn net.Conn) {
 	}
 }
 
+// login authenticates a client, reserves its single session, and sends
+// login_ok. A nil result means the connection was rejected or the reply failed.
 func (s *Server) login(ctx context.Context, conn net.Conn, message wire.Message) *session {
-	client, exists := s.clients[message.Client]
-	if !exists || subtle.ConstantTimeCompare([]byte(client.Token), []byte(message.Token)) != 1 {
+	client, ok := s.authenticate(message)
+	if !ok {
 		s.reject(conn, "denied", "authentication rejected")
 		return nil
 	}
-	names := make(map[string]bool)
-	for _, service := range client.Services {
-		names[service.Name] = true
-	}
-	if len(message.Services) != len(names) {
+	if !matchesServices(client, message.Services) {
 		s.reject(conn, "bad_services", "registered services must match server configuration")
 		return nil
-	}
-	for _, name := range message.Services {
-		if !names[name] {
-			s.reject(conn, "bad_services", "registered services must match server configuration")
-			return nil
-		}
-		delete(names, name)
 	}
 	id, err := wire.NewID()
 	if err != nil {
@@ -220,15 +244,11 @@ func (s *Server) login(ctx context.Context, conn net.Conn, message wire.Message)
 		id: id, client: client.ID, ctx: sessCtx, cancel: cancel,
 		sender: &wire.Sender{Conn: conn, Timeout: time.Duration(s.cfg.Timeout)},
 	}
-	s.mu.Lock()
-	if s.sessions[client.ID] != nil {
-		s.mu.Unlock()
+	if !s.claimSession(sess) {
 		cancel()
 		s.reject(conn, "busy", "client is already connected")
 		return nil
 	}
-	s.sessions[client.ID] = sess
-	s.mu.Unlock()
 	// The session remains unavailable to visitors until its login reply is sent.
 	if err := sess.sender.Send(wire.Message{Type: "login_ok", Session: id}); err != nil {
 		s.endSession(sess)
@@ -245,6 +265,46 @@ func (s *Server) login(ctx context.Context, conn net.Conn, message wire.Message)
 	return sess
 }
 
+// authenticate returns the configured client when the token matches.
+func (s *Server) authenticate(message wire.Message) (config.ServerClient, bool) {
+	client, exists := s.clients[message.Client]
+	if !exists || subtle.ConstantTimeCompare([]byte(client.Token), []byte(message.Token)) != 1 {
+		return config.ServerClient{}, false
+	}
+	return client, true
+}
+
+// matchesServices reports whether the registered names match the configured set.
+func matchesServices(client config.ServerClient, requested []string) bool {
+	if len(requested) != len(client.Services) {
+		return false
+	}
+	names := make(map[string]bool, len(client.Services))
+	for _, service := range client.Services {
+		names[service.Name] = true
+	}
+	for _, name := range requested {
+		if !names[name] {
+			return false
+		}
+		delete(names, name)
+	}
+	return true
+}
+
+// claimSession installs sess as the client's only live session.
+func (s *Server) claimSession(sess *session) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions[sess.client] != nil {
+		return false
+	}
+	s.sessions[sess.client] = sess
+	return true
+}
+
+// controlSession serves keepalive and pairing failures until the session
+// ends. Any other message terminates the session.
 func (s *Server) controlSession(conn net.Conn, sess *session) {
 	defer s.endSession(sess)
 	stop := context.AfterFunc(sess.ctx, func() { conn.Close() })
@@ -257,6 +317,7 @@ func (s *Server) controlSession(conn net.Conn, sess *session) {
 		if err != nil {
 			return
 		}
+		// After login only keepalive and pairing failures are valid.
 		switch message.Type {
 		case "ping":
 			if err := sess.sender.Send(wire.Message{Type: "pong"}); err != nil {
@@ -276,6 +337,7 @@ func (s *Server) controlSession(conn net.Conn, sess *session) {
 	}
 }
 
+// endSession removes sess from the registry and cancels its pending work.
 func (s *Server) endSession(sess *session) {
 	s.mu.Lock()
 	if s.sessions[sess.client] == sess {
@@ -286,6 +348,8 @@ func (s *Server) endSession(sess *session) {
 	s.log.Info("client disconnected", "client", sess.client)
 }
 
+// acceptService forwards each visitor that fits the client limits and closes
+// the rest without pairing them.
 func (s *Server) acceptService(ctx context.Context, listener serviceListener) error {
 	for {
 		conn, err := listener.Accept()
@@ -305,12 +369,17 @@ func (s *Server) acceptService(ctx context.Context, listener serviceListener) er
 	}
 }
 
+// reserve accounts for one visitor before open is sent. It returns nil when
+// the client is offline or at a connection or pending limit.
 func (s *Server) reserve(client, service string) *pending {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess := s.sessions[client]
+	if sess == nil || !sess.ready || sess.ctx.Err() != nil {
+		return nil
+	}
 	limits := s.clients[client]
-	if sess == nil || !sess.ready || sess.ctx.Err() != nil || sess.active >= limits.MaxConnections || sess.waiting >= limits.MaxPending {
+	if sess.active >= limits.MaxConnections || sess.waiting >= limits.MaxPending {
 		return nil
 	}
 	id, err := wire.NewID()
@@ -325,9 +394,12 @@ func (s *Server) reserve(client, service string) *pending {
 	return p
 }
 
+// forward asks the client for a work connection, then relays the visitor
+// until both directions finish, the pending deadline passes, or ctx ends.
 func (s *Server) forward(ctx context.Context, visitor net.Conn, p *pending) {
 	defer visitor.Close()
 	defer p.cancel()
+	// Release the pending accounting once, whichever path ends the request.
 	defer func() {
 		s.mu.Lock()
 		if s.pending[p.id] == p {
@@ -339,10 +411,12 @@ func (s *Server) forward(ctx context.Context, visitor net.Conn, p *pending) {
 	}()
 	stop := context.AfterFunc(ctx, func() { visitor.Close() })
 	defer stop()
+	// A failed request write ends the whole session; pairing cannot recover.
 	if err := p.session.sender.Send(wire.Message{Type: "open", Request: p.id, Service: p.service}); err != nil {
 		p.session.cancel()
 		return
 	}
+	// Wait for pairing or for the pending deadline to expire.
 	select {
 	case work := <-p.conn:
 		p.cancel()
@@ -353,14 +427,18 @@ func (s *Server) forward(ctx context.Context, visitor net.Conn, p *pending) {
 	}
 }
 
+// attach hands a work connection to the pending request. It returns true
+// when ownership moves to forward.
 func (s *Server) attach(conn net.Conn, message wire.Message) bool {
 	s.mu.Lock()
 	p := s.pending[message.Request]
-	if p == nil || p.session.client != message.Client || p.session.id != message.Session || p.ctx.Err() != nil {
+	valid := p != nil && p.session.client == message.Client && p.session.id == message.Session && p.ctx.Err() == nil
+	if !valid {
 		s.mu.Unlock()
 		s.reject(conn, "denied", "unknown or expired request")
 		return false
 	}
+	// Remove the request under the lock so a second attach cannot reuse it.
 	delete(s.pending, p.id)
 	p.session.waiting--
 	s.mu.Unlock()
@@ -380,6 +458,8 @@ func (s *Server) attach(conn net.Conn, message wire.Message) bool {
 	}
 }
 
+// reject sends a best-effort error frame; the caller still closes the
+// connection.
 func (s *Server) reject(conn net.Conn, code, reason string) {
 	_ = wire.Write(conn, wire.Message{Type: "error", Code: code, Error: reason})
 }

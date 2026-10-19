@@ -1,4 +1,5 @@
 // Linux TCP transfers retain Go's pooled splice implementation and netpoll.
+
 package streamcopy
 
 import "net"
